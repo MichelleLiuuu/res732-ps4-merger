@@ -1,0 +1,400 @@
+---
+title: "res732-ps4-merger"
+output: html_document
+date: "2024-04-21"
+---
+```{r}
+rm(list = ls())
+```
+
+
+```{r}
+library(dplyr)
+library(magrittr)
+library(stargazer)
+library(knitr)
+library(foreach)
+library(ggplot2)
+library(latex2exp)
+library(doParallel)
+registerDoParallel()
+knitr::opts_chunk$set(echo = FALSE, fig.align = "center")
+```
+
+# 1 Process sales data, and solve question 1.
+
+
+```{r}
+# Read in the sales data
+df <- read.csv("data/data_agg_rc_sales.csv", header = FALSE)
+colnames(df) <- c("t", "j", "q", "size","p", "ad", "light", "foreign", "mcshifter")
+```
+
+ 
+```{r}
+# calcualte product 1-6 share 
+df <- df %>%
+  mutate(s = q /size)
+
+# Calculate outside product share (s0) for each market
+
+df <- df %>%
+  group_by(t) %>%
+  mutate(s0 = 1 - sum(s)) 
+```
+ 
+```{r}
+# Plot histogram of the outside product share (s0) across markets
+ggplot(df, aes(x =  s0)) +
+  geom_histogram(bins = 100, fill = "lightskyblue", color = "black") +
+  labs(title = "Distribution of Share of Outside Product",
+       x = "Share of Outside Product",
+       y = "Frequency")
+
+ggsave("histogram_plot.png")
+```
+ 
+```{r}
+product_data <- df %>%
+  select(market_ids = t,      # Renaming 't' to 'market_ids'
+         product_ids = j,     # Renaming 'j' to 'product_ids'
+         shares = s,          # Renaming 's' to 'shares'
+         prices = p,          # Renaming 'p' to 'prices'
+         ad,                 # Keeping 'ad' as is
+         light,              # Keeping 'light' as is
+         foreign,            # Keeping 'foreign' as is
+         demand_instruments0 = mcshifter)
+
+product_data <- product_data %>%
+  filter(shares != 0)
+```
+ 
+```{r}
+write.csv(product_data, "product_data.csv", row.names = FALSE)
+```
+ 
+ 
+
+
+# 2 process demographic data.
+
+```{r}
+# Read in the sales data
+demo_data <- read.csv("data/data_agg_rc_demo.csv", header = FALSE)
+
+colnames(demo_data) <- c("t", "p_nm_nc", "p_nm_c", "p_m_nc", "p_m_c")
+
+```
+
+
+```{r}
+# Add new column 'minor' as the sum of 'p_m_nc' and 'p_m_c'
+demo_data$minor <- demo_data$p_m_nc + demo_data$p_m_c
+
+# Add new column 'col' as the sum of 'p_nm_c' and 'p_m_c'
+demo_data$college <- demo_data$p_nm_c + demo_data$p_m_c
+
+# View the updated dataset with new columns
+head(demo_data)
+```
+ 
+
+
+```{r}
+# Set the seed for reproducibility
+set.seed(123)
+
+# Function to generate random draws based on probabilities
+generate_samples <- function(data, n_per_district = 20) {
+  # Initialize an empty dataframe to store the sampled data
+  sample_data <- data.frame(
+    t = character(),
+    dummy_minor = integer(),
+    dummy_college = integer(),
+    stringsAsFactors = FALSE
+  )
+  
+  # Loop through each district
+  for (i in 1:nrow(data)) {
+    # Number of individuals to sample in this district
+    n_samples <- n_per_district
+    
+    # Probability of being a minor or college-educated
+    prob_minor <- data$minor[i]
+    prob_college <- data$college[i]
+    
+    # Generate random samples based on probabilities
+    sampled_minor <- rbinom(n_samples, 1, prob_minor)
+    sampled_college <- rbinom(n_samples, 1, prob_college)
+    
+    # Create a dataframe for this district's samples
+    district_samples <- data.frame(
+      t = rep(data$t[i], n_samples),
+      dummy_minor = sampled_minor,
+      dummy_college = sampled_college
+    )
+    
+    # Append district samples to the main dataframe
+    sample_data <- rbind(sample_data, district_samples)
+  }
+  
+  return(sample_data)
+}
+
+# Call the function to generate samples
+sample_data <- generate_samples(demo_data)
+```
+ 
+```{r}
+sample_data$nodes0 <- rnorm(nrow(sample_data))
+sample_data$nodes1 <- rnorm(nrow(sample_data))
+sample_data$nodes2 <- rnorm(nrow(sample_data))
+sample_data$nodes3 <- rnorm(nrow(sample_data))
+sample_data$weights <- 1 / 20
+```
+
+
+```{r}
+agent_data <- transform(sample_data,
+                          market_ids = t,
+                          weights = weights,
+                          nodes0 = nodes0,
+                          nodes1 = nodes1,
+                        nodes2 = nodes2,
+                        nodes3 = nodes3,
+                          minor = dummy_minor,
+                          college = dummy_college)
+
+# Reorder columns
+agent_data <- agent_data[, c("market_ids", "weights", "nodes0", "nodes1", "nodes2", "nodes3", "minor", "college")]
+
+```
+
+ 
+```{r}
+write.csv(agent_data, "agent_data.csv", row.names = FALSE)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+```{r}
+product_data <- merge(product_data, demo_data[, c("t", "minor", "col")], by = "t", all.x = TRUE)
+
+# View the merged dataset
+head(product_data)
+```
+```{r}
+# set the seed
+set.seed(1)
+# number of products
+J <- 6
+# dimension of product characteristics including the intercept
+K <- 2
+# number of markets
+T <- 1000
+# number of consumers per market
+N <- product_data$size[seq(1, 6000, by = 6)]
+ 
+# number of Monte Carlo
+L <- 40
+```
+
+```{r}
+sum_N <- sum(N)
+```
+
+
+
+```{r}
+beta <- rnorm(K); 
+beta[1] <- 4
+beta
+
+sigma <- abs(rnorm(K)); 
+sigma
+
+mu <- 0.5
+omega <- 1
+
+price_xi <- 1
+sd_x <- 2
+sd_xi <- 0.5
+sd_c <- 0.05
+sd_p <- 0.05
+```
+
+
+```{r}
+# make product characteristics data
+X <- matrix(sd_x * rnorm(J * (K - 1)), nrow = J)
+X <- cbind(rep(1, J), X)
+colnames(X) <- paste("x", 1:K, sep = "_")
+X <- data.frame(j = 1:J, X) %>%
+  tibble::as_tibble()
+# add outside option
+X <- rbind(
+  rep(0, dim(X)[2]),
+  X
+) 
+```
+
+```{r}
+M <- expand.grid(j = 1:J, t = 1:T) %>%
+  tibble::as_tibble() %>%
+  dplyr::mutate(
+    xi = sd_xi * rnorm(J*T),
+    c = exp(sd_c * rnorm(J*T)),
+    p = exp(price_xi * xi + sd_p * rnorm(J*T)) + c
+  ) 
+
+# add outside option
+outside <- data.frame(j = 0, t = 1:T, xi = 0, c = 0, p = 0)
+M <- rbind(M, outside) %>%
+  dplyr::arrange(t, j)
+```
+
+
+```{r}
+NN <- 20
+```
+
+
+```{r}
+# make consumer-market data
+V <- matrix(rnorm(NN * T * (K + 1)), nrow = NN * T) 
+colnames(V) <- c(paste("v_x", 1:K, sep = "_"), "v_p")
+V <- data.frame(
+  expand.grid(i = 1:NN, t = 1:T),
+  V
+) %>%
+  tibble::as_tibble()
+```
+
+
+ 
+
+
+1. First draw Monte Carlo consumer-level heterogeneity `V_mcmc` and Monte Carlo preference shocks `e_mcmc`. The number of simulations is `L`. This does not have to be the same with the actual number of consumers `N`. 
+
+```{r}
+L <- 40   # number of monte carlo
+T <- 1000  # number of market
+K <- 2    # number of profuct characteristic  
+```
+
+
+```{r}
+# mixed logit estimation
+## draw mcmc V
+V_mcmc <- matrix(rnorm(L*T*(K + 1)), nrow = L*T) 
+colnames(V_mcmc) <- c(paste("v_x", 1:K, sep = "_"), "v_p")
+V_mcmc <- data.frame(
+  expand.grid(i = 1:L, t = 1:T),
+  V_mcmc
+) %>%
+  tibble::as_tibble() 
+```
+
+```{r, echo = TRUE}
+V_mcmc
+```
+
+```{r}
+J <- 6
+```
+
+
+```{r}
+ 
+# draw idiosyncratic shocks
+e_mcmc <- evd::rgev(sum_N)
+```
+
+```{r, echo = TRUE}
+head(e_mcmc)
+```
+
+```{r}
+theta <- c(beta, sigma, mu, omega)
+theta
+```
+```{r}
+product_data <- product_data %>%
+  mutate(xi = sd_xi * rnorm(J*T) 
+```
+
+
+```{r}
+XX <- as.matrix(dplyr::select(product_data, light, foreign))
+pp <- as.matrix(dplyr::select(product_data_share_smooth, p)) 
+xi <- as.matrix(dplyr::select(product_data_share_smooth, xi))
+alpha <- - exp(mu + omega^2/2)
+delta <- XX %*% as.matrix(beta) + pp * alpha + xi
+delta <- dplyr::select(product_data_share_smooth, t, j) %>%
+  dplyr::mutate(delta = as.numeric(delta))
+```
+
+
+```{r}
+sigma=np.ones((4, 4))
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+
+
+```{r}
+```
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+ 
